@@ -34,8 +34,8 @@ void debugPrintBufferBytes(uint8_t* buffer, int len) {
 
 void debugPrintIpHeader(struct iphdr iphdr) {
     printf("tos: %u\n", iphdr.tos);
-    printf("tot_len: %u\n", iphdr.tot_len);
-    printf("id: %u\n", iphdr.id);
+    printf("tot_len: %u\n", ntohs(iphdr.tot_len));
+    printf("id: %u\n", ntohs(iphdr.id));
     printf("frag_off: %u\n", iphdr.frag_off);
     printf("ttl: %u\n", iphdr.ttl);
     printf("protocol: %u\n", iphdr.protocol);
@@ -82,9 +82,8 @@ int main() {
     // Hardcoded constants for proof-of-concept.
     uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
     uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
-    struct timeval TIMEOUT;
-    TIMEOUT.tv_sec = 2;
-    TIMEOUT.tv_usec = 0;
+    struct timeval TIMEOUT = {1, 0};
+    int error = 0;
 
     // Set up address struct.
     struct sockaddr_in addr;
@@ -102,6 +101,11 @@ int main() {
         printf("Error creating receiver socket.\n");
         return 1;
     }
+    error = setsockopt(recvSockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
+    if (error < 0) {
+        printf("Failed to set receive socket option correctly: %d\n", errno);
+        return 1;
+    }
 
     uint8_t msgbuffer[8];
     memset(msgbuffer, 0, sizeof(msgbuffer));
@@ -109,15 +113,9 @@ int main() {
 
     int ttl = 2;
     uint32_t raddr = 0;
-    while ((raddr != GOOGLE_IP_ADDRESS) && (ttl < 30)) {
-        // Set timeout for receiver socket.
-        // gettimeofday(&TIMEOUT, NULL);
-        int error = setsockopt(recvSockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
-        if (error < 0) {
-            printf("Failed to set receive socket option correctly: %d\n", errno);
-            return 1;
-        }
-        
+    uint8_t buffer[RECV_BUFFER_SIZE];
+    while ((raddr != GOOGLE_IP_ADDRESS) && (ttl < 30)) {        
+        memset(buffer, 0, RECV_BUFFER_SIZE);
         error = setsockopt(sendSockId, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
         if (error < 0) {
             printf("Failed to set send socket option: %d\n", errno);
@@ -131,7 +129,6 @@ int main() {
         printf("\nSent message with ttl %d\n", ttl);
         ttl++;
 
-        uint8_t buffer[RECV_BUFFER_SIZE];
         struct sockaddr_in returnAddress;
         uint32_t returnAddressSize = sizeof(returnAddress);
         bytes = recvfrom(recvSockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddress), &(returnAddressSize));
@@ -143,23 +140,19 @@ int main() {
 
         if ((bytes < 0) && (errno == EAGAIN)) {
             printf("Timeout reached. No response received.\n");
-        } else if (bytes > sizeof(struct TimeExceededResponse)) {
-            printf("Received more bytes than expected.\n");
-            debugPrintBufferBytes(buffer, bytes);
-            return 1;
         } else {
-            struct TimeExceededResponse response;
-            memcpy(&response, buffer, bytes);
-            raddr = (uint32_t) response.iphdr.saddr;
-            // debugPrintBufferBytes(buffer, bytes);
+            struct TimeExceededResponse* response;
+            response = (struct TimeExceededResponse*) buffer;
+            raddr = (uint32_t) response->iphdr.saddr;
+            debugPrintBufferBytes(buffer, bytes);
             printf("\nMessage Header:\n");
-            debugPrintIpHeader(response.iphdr);
-            // printf("\nICMP Header:\n");
-            // debugPrintICMPInfo(response.responseBody.icmphdr);
-            // printf("\nOriginal message header:\n");
-            // debugPrintIpHeader(response.responseBody.originalIpHdr);
-            // printf("\nOriginal message bytes:\n");
-            // debugPrintBufferBytes((uint8_t*)(&(response.responseBody.originalBytes)), 8);
+            debugPrintIpHeader(response->iphdr);
+            printf("\nICMP Header:\n");
+            debugPrintICMPInfo(response->responseBody.icmphdr);
+            printf("\nOriginal message header:\n");
+            debugPrintIpHeader(response->responseBody.originalIpHdr);
+            printf("\nOriginal message bytes:\n");
+            debugPrintBufferBytes((uint8_t*)(&(response->responseBody.originalBytes)), 8);
         }
     }
 
