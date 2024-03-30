@@ -35,7 +35,7 @@ struct TimeExceededResponse {
 uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
 uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
 uint16_t SOURCE_PORT = 53;
-uint16_t DEST_PORT = 32768 + 666;
+uint16_t DEST_PORT = 60321;
 
 void debugPrintBufferBytes(uint8_t* buffer, int len) {
     for (int i = 0; i < len; i++) {
@@ -95,7 +95,7 @@ struct SendPacket buildMessage() {
 
     message.udphdr.source = htons(SOURCE_PORT);
     message.udphdr.dest = htons(DEST_PORT);
-    message.udphdr.len = sizeof(message);
+    message.udphdr.len = htons(sizeof(message));
     message.udphdr.check = 0;  // I *think* this have the destination ignore the checksum.
 
     // Build payload.
