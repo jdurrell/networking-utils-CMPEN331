@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/udp.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,6 +17,11 @@
 
 #define RECV_BUFFER_SIZE 256
 
+struct SendPacket {
+    struct udphdr udphdr;
+    uint8_t payload[8];
+};
+
 struct TimeExceededResponse {
     struct iphdr iphdr;
     struct {
@@ -24,6 +30,12 @@ struct TimeExceededResponse {
         uint8_t originalBytes[8];
     } responseBody;
 };
+
+// Hardcoded constants for proof-of-concept.
+uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
+uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
+uint16_t SOURCE_PORT = 53;
+uint16_t DEST_PORT = 32768 + 666;
 
 void debugPrintBufferBytes(uint8_t* buffer, int len) {
     for (int i = 0; i < len; i++) {
@@ -78,16 +90,29 @@ uint16_t checksum(uint8_t* arr, int len) {
     return (uint16_t) (~checksum);
 }
 
+struct SendPacket buildMessage() {
+    struct SendPacket message;
+
+    message.udphdr.source = htons(SOURCE_PORT);
+    message.udphdr.dest = htons(DEST_PORT);
+    message.udphdr.len = sizeof(message);
+    message.udphdr.check = 0;  // I *think* this have the destination ignore the checksum.
+
+    // Build payload.
+    for (int i = 0; i < sizeof(message.payload); i++) {
+        message.payload[i] = i+1;
+    }
+
+    return message;
+}
+
 int main() {
-    // Hardcoded constants for proof-of-concept.
-    uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
-    uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
     struct timeval TIMEOUT = {1, 0};
     int error = 0;
 
     // Set up address struct.
-    struct sockaddr_in addr;
-    addr.sin_addr.s_addr = GOOGLE_IP_ADDRESS;
+    struct sockaddr_in destAddr;
+    destAddr.sin_addr.s_addr = GOOGLE_IP_ADDRESS;
 
     // Create socket for sending UDP messages.
     int sendSockId = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
@@ -107,9 +132,10 @@ int main() {
         return 1;
     }
 
-    uint8_t msgbuffer[8];
-    memset(msgbuffer, 0, sizeof(msgbuffer));
-    memcpy(msgbuffer, &MAGIC, sizeof(MAGIC));
+    struct SendPacket message = buildMessage();
+    // uint8_t msgbuffer[8];
+    // memset(msgbuffer, 0, sizeof(msgbuffer));
+    // memcpy(msgbuffer, &MAGIC, sizeof(MAGIC));
 
     int ttl = 2;
     uint32_t raddr = 0;
@@ -121,7 +147,7 @@ int main() {
             printf("Failed to set send socket option: %d\n", errno);
         }
 
-        int bytes = sendto(sendSockId, msgbuffer, sizeof(msgbuffer), 0, (struct sockaddr*)(&addr), sizeof(addr));
+        int bytes = sendto(sendSockId, (void*)(&message), sizeof(message), 0, (struct sockaddr*)(&destAddr), sizeof(destAddr));
         if (bytes < 0) {
             printf("Error sending message.\n");
             return 1;
@@ -129,9 +155,9 @@ int main() {
         printf("\nSent message with ttl %d\n", ttl);
         ttl++;
 
-        struct sockaddr_in returnAddress;
-        uint32_t returnAddressSize = sizeof(returnAddress);
-        bytes = recvfrom(recvSockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddress), &(returnAddressSize));
+        struct sockaddr_in returnAddr;
+        uint32_t returnAddrSize = sizeof(returnAddr);
+        bytes = recvfrom(recvSockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddr), &(returnAddrSize));
         if ((bytes < 0) && (errno != EAGAIN)) {
             printf("Error receiving message: %d\n", errno);
             return 1;
