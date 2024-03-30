@@ -34,8 +34,8 @@ struct TimeExceededResponse {
 // Hardcoded constants for proof-of-concept.
 uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
 uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
-uint16_t SOURCE_PORT = 53;
-uint16_t DEST_PORT = 60321;
+uint16_t SOURCE_PORT = 3000;
+uint16_t DEST_PORT = 32768 + 666;
 
 void debugPrintBufferBytes(uint8_t* buffer, int len) {
     for (int i = 0; i < len; i++) {
