@@ -1,11 +1,19 @@
+#ifndef _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE
+#endif
+
 #include <arpa/inet.h>
 #include <bits/sockaddr.h>
+#include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -60,17 +68,45 @@ uint16_t checksum(uint8_t* arr, int len) {
     return (uint16_t) (~checksum);
 }
 
-int main() {
-    // Hardcoded constants for proof-of-concept.
-    // uint32_t GOOGLE_IP_ADDRESS = (8 << 24) + (8 << 16) + (8 << 8) + (8);
-    uint32_t GOOGLE_IP_ADDRESS = (102 << 24) + (167 << 16) + (251 << 8) + (142);
+int main(int argc, char* argv[]) {
     uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
+    
+    if (argc != 2) {
+        printf("Invalid number of arguments provided. Usage: ping <address-or-hostname>\n");
+        return 1;
+    }
+
+    int error = 0;
+
+    // Resolve hostname to IP address.
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;  // Only use IPv4 addresses for now.
+    hints.ai_protocol = IPPROTO_ICMP;
+    hints.ai_flags = 0;
+    hints.ai_socktype = SOCK_RAW;
+    struct addrinfo* addrinfo = NULL;
+    error = getaddrinfo(argv[1], NULL, &hints, &addrinfo);
+    if (error < 0) {
+        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
+        return 1;
+    } else if (addrinfo == NULL) {
+        printf("No addresses found for given hostname %s.\n", argv[1]);
+        return 1;
+    }
 
     // Set up address struct.
     struct sockaddr_in addr;
-    addr.sin_addr.s_addr = GOOGLE_IP_ADDRESS;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_addr.s_addr = ((struct sockaddr_in*) addrinfo->ai_addr)->sin_addr.s_addr;
+    printf("IP address to ping: %d.%d.%d.%d\n",
+            (ntohl(addr.sin_addr.s_addr) & 0xFF000000) >> 24,
+            (ntohl(addr.sin_addr.s_addr) & 0x00FF0000) >> 16,
+            (ntohl(addr.sin_addr.s_addr) & 0x0000FF00) >> 8,
+            (ntohl(addr.sin_addr.s_addr) & 0x000000FF)
+    );
 
-    // Create raw socket.
+    // Create raw socket for sending and receiving ICMP messages.
     int sockId = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
     if (sockId == -1) {
         printf("Error creating socket.\n");
@@ -85,46 +121,57 @@ int main() {
     echoRequestMessage.hdr.un.echo.sequence = htons(0);
     memcpy(echoRequestMessage.data, &MAGIC, sizeof(echoRequestMessage.data));
     echoRequestMessage.hdr.checksum = checksum((uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage));
-    debugPrintPacketInfo(echoRequestMessage);
+    // debugPrintPacketInfo(echoRequestMessage);
 
-    // Send echo request message.
-    int bytes = sendto(sockId, &(echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr));
-    if (bytes < 0) {
-        printf("Error sending message.\n");
-        return 1;
-    } else if (bytes != sizeof(echoRequestMessage)) {
-        printf(
-                "Error: Did not send the expected number of bytes. Expected %lu, sent %d.\n",
-                sizeof(echoRequestMessage), bytes
-        );  
-    } else {
-        printf("Sent %d bytes.\n", bytes);
-    }
-
-    printf("\n");
-
-    // Receive echo reply message.
+    // Set up response fields.
     uint8_t buffer[RECV_BUFFER_SIZE];
     struct sockaddr_in returnAddress;
     uint32_t returnAddressSize = sizeof(returnAddress);
-    bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddress), &(returnAddressSize));
-    if (bytes < 0) {
-        printf("Error receiving message.\n");
-        return 1;
-    } else if (bytes != sizeof(struct EchoResponse)) {
-        printf(
-                "Error: Did not receive the expected number of bytes. Expected %lu, received %d.\n",
-                sizeof(struct EchoResponse), bytes
-        );
-        return 1;  
-    } else {
-        printf("Received %d bytes.\n", bytes);
-    }
+    struct EchoResponse* reply;
+    reply = (struct EchoResponse*) buffer;
 
-    // Parse reply message.
-    struct EchoResponse reply;
-    memcpy(&reply, buffer, sizeof(reply));
-    debugPrintPacketInfo(reply.packet);
+    while (true) {
+        // Reset structures for receiving data.
+        memset(buffer, 0, RECV_BUFFER_SIZE);
+        returnAddress.sin_addr.s_addr = 0;
+
+        // Send echo request message.
+        time_t sendTime = time(NULL);
+        int bytes = sendto(sockId, &(echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr));
+        if (bytes < 0) {
+            printf("Error sending message: %d (%s)\n", errno, strerror(errno));
+            return 1;
+        } else if (bytes != sizeof(echoRequestMessage)) {
+            printf(
+                    "Error: Did not send the expected number of bytes. Expected %lu, sent %d.\n",
+                    sizeof(echoRequestMessage), bytes
+            );
+            return 1;
+        }
+        // printf("Sent %d bytes.\n", bytes);
+
+        // Attempt to receive echo reply message.
+        bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddress), &(returnAddressSize));
+        time_t latency = time(NULL) - sendTime;
+        if (bytes < 0) {
+            printf("Error receiving message: %d (%s)\n", errno, strerror(errno));
+            return 1;
+        } else if (bytes != sizeof(struct EchoResponse)) {
+            printf(
+                    "Error: Did not receive the expected number of bytes. Expected %lu, received %d.\n",
+                    sizeof(struct EchoResponse), bytes
+            );
+            return 1;
+        }
+        printf("Received %d bytes.\n", bytes);
+
+        // Parse reply message.
+        debugPrintPacketInfo(reply->packet);
+        printf("\n");
+
+        // Sleep for a second so that we don't spam both the console and the target server.
+        sleep(1);
+    }
 
     return 0;
 }
