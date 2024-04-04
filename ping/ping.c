@@ -18,10 +18,12 @@
 #include <unistd.h>
 
 #define RECV_BUFFER_SIZE 256
+#define MAGIC_DATA_IDX 0
+#define PID_DATA_IDX 1
 
 struct EchoPacket {
     struct icmphdr hdr;   // ICMP Header
-    uint8_t data[8];      // Data containing magic value to help ensure correctness.
+    int data[2];         // Data containing magic values to help ensure correctness.
 };
 
 struct EchoResponse {
@@ -117,24 +119,20 @@ int main(int argc, char* argv[]) {
     struct EchoPacket echoRequestMessage;
     echoRequestMessage.hdr.type = ICMP_ECHO;
     echoRequestMessage.hdr.code = 0;
-    uint16_t message_id = (uint16_t)(getpid() % (1 << 16));  // Cast pid to a 16-bit integer to store it in the id field.
-    echoRequestMessage.hdr.un.echo.id = htons(getpid());
-    echoRequestMessage.hdr.un.echo.sequence = htons(0);
-    int* data = (int*) (echoRequestMessage.data);
-    data[0] = MAGIC;
-    data[1] = getpid();
+    // Cast pid to a 16-bit integer because id field is 16-bit.
+    echoRequestMessage.hdr.un.echo.id = htons((uint16_t)(getpid() % (1 << 16)));
+    echoRequestMessage.hdr.un.echo.sequence = htons(1);
+    echoRequestMessage.data[MAGIC_DATA_IDX] = MAGIC;
+    echoRequestMessage.data[PID_DATA_IDX] = getpid();
 
     // Set up response fields.
     uint8_t buffer[RECV_BUFFER_SIZE];
-    struct sockaddr_in returnAddress;
-    uint32_t returnAddressSize = sizeof(returnAddress);
     struct EchoResponse* reply;
     reply = (struct EchoResponse*) buffer;
 
     while (true) {
         // Reset structures for receiving data.
         memset(buffer, 0, RECV_BUFFER_SIZE);
-        returnAddress.sin_addr.s_addr = 0;
 
         // Calculate checksum.
         echoRequestMessage.hdr.checksum = 0;
@@ -156,7 +154,7 @@ int main(int argc, char* argv[]) {
         // printf("Sent %d bytes.\n", bytes);
 
         // Attempt to receive echo reply message.
-        bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, (struct sockaddr*)(&returnAddress), &(returnAddressSize));
+        bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
         time_t latency = time(NULL) - sendTime;
         if (bytes < 0) {
             printf("Error receiving message: %d (%s)\n", errno, strerror(errno));
@@ -172,10 +170,11 @@ int main(int argc, char* argv[]) {
 
         // Parse reply message.
         struct icmphdr* replyHdr = &(reply->packet.hdr);
-        if ((returnAddress.sin_addr.s_addr == addr.sin_addr.s_addr)                     // Packet is from the target.
+        if ((reply->iphdr.saddr == addr.sin_addr.s_addr)                                // Packet is from the target.
             && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
             && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)  // Packet is a response to this iteration.
-            && (((int*)(&(reply->packet.data)))[1] == getpid()))                        // Packet is a response to *this* process.
+            && (reply->packet.data[PID_DATA_IDX] == getpid())                           // Packet is a response to *this* process.
+            && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))                           // Magic is correct.
         {
             printf("\n");
             debugPrintPacketInfo(reply->packet);
