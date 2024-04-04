@@ -69,8 +69,8 @@ uint16_t checksum(uint8_t* arr, int len) {
 }
 
 int main(int argc, char* argv[]) {
-    uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
-    
+    int MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
+
     if (argc != 2) {
         printf("Invalid number of arguments provided. Usage: ping <address-or-hostname>\n");
         return 1;
@@ -117,11 +117,12 @@ int main(int argc, char* argv[]) {
     struct EchoPacket echoRequestMessage;
     echoRequestMessage.hdr.type = ICMP_ECHO;
     echoRequestMessage.hdr.code = 0;
+    uint16_t message_id = (uint16_t)(getpid() % (1 << 16));  // Cast pid to a 16-bit integer to store it in the id field.
     echoRequestMessage.hdr.un.echo.id = htons(getpid());
     echoRequestMessage.hdr.un.echo.sequence = htons(0);
-    memcpy(echoRequestMessage.data, &MAGIC, sizeof(echoRequestMessage.data));
-    echoRequestMessage.hdr.checksum = checksum((uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage));
-    // debugPrintPacketInfo(echoRequestMessage);
+    int* data = (int*) (echoRequestMessage.data);
+    data[0] = MAGIC;
+    data[1] = getpid();
 
     // Set up response fields.
     uint8_t buffer[RECV_BUFFER_SIZE];
@@ -134,6 +135,10 @@ int main(int argc, char* argv[]) {
         // Reset structures for receiving data.
         memset(buffer, 0, RECV_BUFFER_SIZE);
         returnAddress.sin_addr.s_addr = 0;
+
+        // Calculate checksum.
+        echoRequestMessage.hdr.checksum = 0;
+        echoRequestMessage.hdr.checksum = checksum((uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage));
 
         // Send echo request message.
         time_t sendTime = time(NULL);
@@ -163,11 +168,21 @@ int main(int argc, char* argv[]) {
             );
             return 1;
         }
-        printf("Received %d bytes.\n", bytes);
+        // printf("Received %d bytes.\n", bytes);
 
         // Parse reply message.
-        debugPrintPacketInfo(reply->packet);
-        printf("\n");
+        struct icmphdr* replyHdr = &(reply->packet.hdr);
+        if ((returnAddress.sin_addr.s_addr == addr.sin_addr.s_addr)                     // Packet is from the target.
+            && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
+            && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)  // Packet is a response to this iteration.
+            && (((int*)(&(reply->packet.data)))[1] == getpid()))                        // Packet is a response to *this* process.
+        {
+            printf("\n");
+            debugPrintPacketInfo(reply->packet);
+        }
+
+        // Increment sequence number.
+        echoRequestMessage.hdr.un.echo.sequence = ntohs(htons(echoRequestMessage.hdr.un.echo.sequence) + 1);
 
         // Sleep for a second so that we don't spam both the console and the target server.
         sleep(1);
