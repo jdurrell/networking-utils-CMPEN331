@@ -71,6 +71,7 @@ uint16_t checksum(uint8_t* arr, int len) {
 }
 
 int main(int argc, char* argv[]) {
+    struct timeval TIMEOUT = {1, 0};
     int MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
 
     if (argc != 2) {
@@ -114,6 +115,11 @@ int main(int argc, char* argv[]) {
         printf("Error creating socket.\n");
         return 1;
     }
+    error = setsockopt(sockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
+    if (error < 0) {
+        printf("Failed to set receive socket option correctly: %d\n", errno);
+        return 1;
+    }
 
     // Build ICMP echo request message. RFC 792.
     struct EchoPacket echoRequestMessage;
@@ -129,6 +135,7 @@ int main(int argc, char* argv[]) {
     uint8_t buffer[RECV_BUFFER_SIZE];
     struct EchoResponse* reply;
     reply = (struct EchoResponse*) buffer;
+    struct icmphdr* replyHdr = &(reply->packet.hdr);
 
     while (true) {
         // Reset structures for receiving data.
@@ -156,28 +163,34 @@ int main(int argc, char* argv[]) {
         // Attempt to receive echo reply message.
         bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
         time_t latency = time(NULL) - sendTime;
-        if (bytes < 0) {
-            printf("Error receiving message: %d (%s)\n", errno, strerror(errno));
+        if ((bytes < 0) && (errno != EAGAIN)) {
+            printf("Error receiving message %d: %d (%s)\n", echoRequestMessage.hdr.un.echo.sequence, errno, strerror(errno));
             return 1;
-        } else if (bytes != sizeof(struct EchoResponse)) {
+        } else if ((bytes > 0) && (bytes != sizeof(struct EchoResponse))) {
             printf(
                     "Error: Did not receive the expected number of bytes. Expected %lu, received %d.\n",
                     sizeof(struct EchoResponse), bytes
             );
             return 1;
-        }
-        // printf("Received %d bytes.\n", bytes);
+        } else if (errno == EAGAIN) {
+            // Timed out.
+            printf("* * *\n");
+        } else {
+            // printf("Received %d bytes.\n", bytes);
 
-        // Parse reply message.
-        struct icmphdr* replyHdr = &(reply->packet.hdr);
-        if ((reply->iphdr.saddr == addr.sin_addr.s_addr)                                // Packet is from the target.
-            && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
-            && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)  // Packet is a response to this iteration.
-            && (reply->packet.data[PID_DATA_IDX] == getpid())                           // Packet is a response to *this* process.
-            && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))                           // Magic is correct.
-        {
-            printf("\n");
-            debugPrintPacketInfo(reply->packet);
+            // Ensure reply message was correct.
+            if ((reply->iphdr.saddr == addr.sin_addr.s_addr)                                // Packet is from the target.
+                && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
+                && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)  // Packet is a response to this iteration.
+                && (reply->packet.data[PID_DATA_IDX] == getpid())                           // Packet is a response to *this* process.
+                && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))                           // Magic is correct.
+            {
+                // Reply message was valid: print output to console.
+                printf("\n");
+                debugPrintPacketInfo(reply->packet);
+            } else {
+                printf("* * *\n");
+            }
         }
 
         // Increment sequence number.
