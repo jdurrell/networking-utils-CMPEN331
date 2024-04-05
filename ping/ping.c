@@ -13,13 +13,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/types.h>
-#include <time.h>
+// #include <time.h>
 #include <unistd.h>
 
-#define RECV_BUFFER_SIZE 256
+#define ADDRESS_BUFFER_SIZE 200
 #define MAGIC_DATA_IDX 0
 #define PID_DATA_IDX 1
+#define RECV_BUFFER_SIZE 256
 
 struct EchoPacket {
     struct icmphdr hdr;   // ICMP Header
@@ -47,6 +49,10 @@ void debugPrintBufferBytes(uint8_t* buffer, int len) {
     printf("\n");
 }
 
+uint64_t totalMicroseconds(struct timeval time) {
+    return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
+}
+
 // Calculate the 16-bit checksum of the given byte array. RFC 1071.
 uint16_t checksum(uint8_t* arr, int len) {
     uint64_t checksum = 0;
@@ -71,7 +77,7 @@ uint16_t checksum(uint8_t* arr, int len) {
 }
 
 int main(int argc, char* argv[]) {
-    struct timeval TIMEOUT = {1, 0};
+    struct timeval TIMEOUT = {3, 0};
     int MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
 
     if (argc != 2) {
@@ -102,7 +108,8 @@ int main(int argc, char* argv[]) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_addr.s_addr = ((struct sockaddr_in*) addrinfo->ai_addr)->sin_addr.s_addr;
-    printf("IP address to ping: %d.%d.%d.%d\n",
+    char ipAddressString[ADDRESS_BUFFER_SIZE];
+    snprintf(ipAddressString, ADDRESS_BUFFER_SIZE, "%d.%d.%d.%d",
             (ntohl(addr.sin_addr.s_addr) & 0xFF000000) >> 24,
             (ntohl(addr.sin_addr.s_addr) & 0x00FF0000) >> 16,
             (ntohl(addr.sin_addr.s_addr) & 0x0000FF00) >> 8,
@@ -136,7 +143,10 @@ int main(int argc, char* argv[]) {
     struct EchoResponse* reply;
     reply = (struct EchoResponse*) buffer;
     struct icmphdr* replyHdr = &(reply->packet.hdr);
+    struct timeval sendTime;
+    struct timeval recvTime;
 
+    printf("Pinging %s:\n", ipAddressString);
     while (true) {
         // Reset structures for receiving data.
         memset(buffer, 0, RECV_BUFFER_SIZE);
@@ -146,7 +156,7 @@ int main(int argc, char* argv[]) {
         echoRequestMessage.hdr.checksum = checksum((uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage));
 
         // Send echo request message.
-        time_t sendTime = time(NULL);
+        gettimeofday(&sendTime, NULL);
         int bytes = sendto(sockId, &(echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr));
         if (bytes < 0) {
             printf("Error sending message: %d (%s)\n", errno, strerror(errno));
@@ -158,11 +168,10 @@ int main(int argc, char* argv[]) {
             );
             return 1;
         }
-        // printf("Sent %d bytes.\n", bytes);
 
         // Attempt to receive echo reply message.
         bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
-        time_t latency = time(NULL) - sendTime;
+        gettimeofday(&recvTime, NULL);
         if ((bytes < 0) && (errno != EAGAIN)) {
             printf("Error receiving message %d: %d (%s)\n", echoRequestMessage.hdr.un.echo.sequence, errno, strerror(errno));
             return 1;
@@ -176,8 +185,6 @@ int main(int argc, char* argv[]) {
             // Timed out.
             printf("* * *\n");
         } else {
-            // printf("Received %d bytes.\n", bytes);
-
             // Ensure reply message was correct.
             if ((reply->iphdr.saddr == addr.sin_addr.s_addr)                                // Packet is from the target.
                 && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
@@ -186,8 +193,10 @@ int main(int argc, char* argv[]) {
                 && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))                           // Magic is correct.
             {
                 // Reply message was valid: print output to console.
-                printf("\n");
-                debugPrintPacketInfo(reply->packet);
+                uint64_t latency = totalMicroseconds(recvTime) - totalMicroseconds(sendTime);
+                printf("Reply %d from %s received in %ld.%ldms\n", 
+                        ntohs(replyHdr->un.echo.sequence), ipAddressString, latency/1000, latency%1000
+                );
             } else {
                 printf("* * *\n");
             }
