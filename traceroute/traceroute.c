@@ -3,7 +3,9 @@
 #endif
 
 #include <arpa/inet.h>
+#include <bits/sockaddr.h>
 #include <errno.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
 #include <netinet/udp.h>
@@ -34,8 +36,6 @@ struct Response {
 };
 
 // Hardcoded constants for proof-of-concept.
-uint32_t DEST_IP = (8 << 24) + (8 << 16) + (8 << 8) + (8);
-uint32_t MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
 uint16_t SOURCE_PORT = 3000;
 uint16_t DEST_PORT = 32768 + 666;
 
@@ -125,13 +125,36 @@ struct SendPacket buildMessage() {
     return message;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc != 2) {
+        printf("Invalid number of arguments provided. Usage: traceroute <address-or-hostname>\n");
+        return 1;
+    }
+
     struct timeval TIMEOUT = {1, 0};
     int error = 0;
 
+    // Resolve hostname to IP address.
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;  // Only use IPv4 addresses for now.
+    hints.ai_protocol = IPPROTO_ICMP;
+    hints.ai_flags = 0;
+    hints.ai_socktype = SOCK_RAW;
+    struct addrinfo* addrinfo = NULL;
+    error = getaddrinfo(argv[1], NULL, &hints, &addrinfo);
+    if (error < 0) {
+        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
+        return 1;
+    } else if (addrinfo == NULL) {
+        printf("No addresses found for given hostname %s.\n", argv[1]);
+        return 1;
+    }
+
     // Set up address struct.
     struct sockaddr_in destAddr;
-    destAddr.sin_addr.s_addr = DEST_IP;
+    memset(&destAddr, 0, sizeof(destAddr));
+    destAddr.sin_addr.s_addr = ((struct sockaddr_in*) addrinfo->ai_addr)->sin_addr.s_addr;
 
     // Create socket for sending UDP messages.
     int sendSockId = socket(AF_INET, SOCK_RAW, IPPROTO_UDP);
@@ -161,8 +184,14 @@ int main() {
     uint8_t buffer[RECV_BUFFER_SIZE];
     struct Response* response;
     response = (struct Response*) buffer;
-
-    while ((raddr != DEST_IP) && (ttl < 30)) {        
+    
+    printf("Tracing route to %d.%d.%d.%d:\n",
+            (ntohl(destAddr.sin_addr.s_addr) & 0xFF000000) >> 24,
+            (ntohl(destAddr.sin_addr.s_addr) & 0x00FF0000) >> 16,
+            (ntohl(destAddr.sin_addr.s_addr) & 0x0000FF00) >> 8,
+            (ntohl(destAddr.sin_addr.s_addr) & 0x000000FF)
+    );
+    while ((raddr != destAddr.sin_addr.s_addr) && (ttl < 30)) {        
         // Reset receiving structures.
         memset(buffer, 0, RECV_BUFFER_SIZE);
 
@@ -187,26 +216,17 @@ int main() {
         }
 
         if ((bytes < 0) && (errno == EAGAIN)) {
-            printf("%d: Timeout reached. No response received.\n", ttl);
+            printf("%d: * * * (timeout reached)\n", ttl);
         } else {
             raddr = (uint32_t) (response->iphdr.saddr);
             printOutputLine(ttl, raddr, sendTime, recvTime);
-            // debugPrintBufferBytes(buffer, bytes);
-            // printf("\nMessage Header:\n");
-            // debugPrintIpHeader(response->iphdr);
-            // printf("\nICMP Header:\n");
-            // debugPrintICMPInfo(response->responseBody.icmphdr);
-            // printf("\nOriginal message header:\n");
-            // debugPrintIpHeader(response->responseBody.originalIpHdr);
-            // printf("\nOriginal message bytes:\n");
-            // debugPrintBufferBytes((uint8_t*)(&(response->responseBody.originalBytes)), 8);
         }
 
         // Increment ttl to discover next hop.
         ttl++;
     }
 
-    if (raddr != DEST_IP) {
+    if (raddr != destAddr.sin_addr.s_addr) {
         printf("Max TTL exceeded. Did not receive response from destination.\n");
     }
 
