@@ -15,9 +15,11 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 
 #define RECV_BUFFER_SIZE 256
+#define ITERATIONS_PER_TTL 3
 
 struct SendPacket {
     struct udphdr udphdr;
@@ -73,10 +75,9 @@ uint64_t totalMicroseconds(struct timeval time) {
     return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
 }
 
-void printOutputLine(int ttl, uint32_t addr, struct timeval send, struct timeval recv) {
+void printOutputLine(uint32_t addr, struct timeval send, struct timeval recv) {
     uint64_t latency = totalMicroseconds(recv) - totalMicroseconds(send);
-    printf("%d: %d.%d.%d.%d (%lu.%lums)\n",
-        ttl,
+    printf("%d.%d.%d.%d (%lu.%lums)   ",
         (ntohl(addr) & 0xFF000000) >> 24,
         (ntohl(addr) & 0x00FF0000) >> 16,
         (ntohl(addr) & 0x0000FF00) >> 8,
@@ -178,6 +179,7 @@ int main(int argc, char* argv[]) {
     struct SendPacket message = buildMessage();
 
     int ttl = 1;
+    int numFinalResponses = 0;
     uint32_t raddr = 0;
     struct timeval sendTime;
     struct timeval recvTime;
@@ -191,36 +193,50 @@ int main(int argc, char* argv[]) {
             (ntohl(destAddr.sin_addr.s_addr) & 0x0000FF00) >> 8,
             (ntohl(destAddr.sin_addr.s_addr) & 0x000000FF)
     );
-    while ((raddr != destAddr.sin_addr.s_addr) && (ttl < 30)) {        
-        // Reset receiving structures.
-        memset(buffer, 0, RECV_BUFFER_SIZE);
+    while ((numFinalResponses < ITERATIONS_PER_TTL) && (ttl < 30)) {        
+        printf("Hop %d: ", ttl);
 
-        // Set TTL for this iteration.
-        error = setsockopt(sendSockId, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
-        if (error < 0) {
-            printf("Failed to set send socket option: %d\n", errno);
-        }
+        for (int i = 0; i < ITERATIONS_PER_TTL; i++) {
+            // Reset receiving structures.
+            memset(buffer, 0, RECV_BUFFER_SIZE);
 
-        int bytes = sendto(sendSockId, (void*)(&message), sizeof(message), 0, (struct sockaddr*)(&destAddr), sizeof(destAddr));
-        gettimeofday(&sendTime, NULL);
-        if (bytes < 0) {
-            printf("Error sending message.\n");
-            return 1;
-        }
+            // Set TTL for this iteration.
+            error = setsockopt(sendSockId, IPPROTO_IP, IP_TTL, &ttl, sizeof(ttl));
+            if (error < 0) {
+                printf("Failed to set send socket option: %d\n", errno);
+            }
 
-        bytes = recvfrom(recvSockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
-        gettimeofday(&recvTime, NULL);
-        if ((bytes < 0) && (errno != EAGAIN)) {
-            printf("Error receiving message: %d\n", errno);
-            return 1;
-        }
+            // Send message.
+            int bytes = sendto(sendSockId, (void*)(&message), sizeof(message), 0, (struct sockaddr*)(&destAddr), sizeof(destAddr));
+            gettimeofday(&sendTime, NULL);
+            if (bytes < 0) {
+                printf("Error sending message.\n");
+                return 1;
+            }
 
-        if ((bytes < 0) && (errno == EAGAIN)) {
-            printf("%d: * * * (timeout reached)\n", ttl);
-        } else {
-            raddr = (uint32_t) (response->iphdr.saddr);
-            printOutputLine(ttl, raddr, sendTime, recvTime);
+            // Attempt to receive message.
+            bytes = recvfrom(recvSockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
+            gettimeofday(&recvTime, NULL);
+            if ((bytes < 0) && (errno != EAGAIN)) {
+                printf("Error receiving message: %d\n", errno);
+                return 1;
+            }
+
+            if ((bytes < 0) && (errno == EAGAIN)) {
+                printf("* * * (timeout reached), ");
+            } else {
+                raddr = (uint32_t) (response->iphdr.saddr);
+                if (raddr == destAddr.sin_addr.s_addr) {
+                    numFinalResponses++;
+                }
+                printOutputLine(raddr, sendTime, recvTime);
+            }
+
+            // Sleep for half a second in between packets.
+            struct timespec sleepTime = {0, 500 * 1000 * 1000};
+            nanosleep(&sleepTime, NULL);
         }
+        printf("\n");
 
         // Increment ttl to discover next hop.
         ttl++;
