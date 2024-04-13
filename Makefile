@@ -1,0 +1,14 @@
+ifndef CC
+	CC = gcc
+endif
+
+# Build everything.
+all: ping traceroute
+
+# Build ping.
+ping:
+	$(CC) ping.c util.c -o ping362.out
+
+# Build traceroute.
+traceroute:
+	$(CC) traceroute.c util.c -o traceroute362.out

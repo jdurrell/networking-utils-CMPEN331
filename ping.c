@@ -15,8 +15,9 @@
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <sys/types.h>
-// #include <time.h>
 #include <unistd.h>
+
+#include "util.h"
 
 #define ADDRESS_BUFFER_SIZE 200
 #define MAGIC_DATA_IDX 0
@@ -40,40 +41,6 @@ void debugPrintPacketInfo(struct EchoPacket packet) {
     printf("Sequence Number: %d\n", ntohs(packet.hdr.un.echo.sequence));
     printf("Checksum: %u\n", packet.hdr.checksum);
     printf("Data: %lu\n", *((uint64_t*)(packet.data)));
-}
-
-void debugPrintBufferBytes(uint8_t* buffer, int len) {
-    for (int i = 0; i < len; i++) {
-        printf("%u ", buffer[i]);
-    }
-    printf("\n");
-}
-
-uint64_t totalMicroseconds(struct timeval time) {
-    return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
-}
-
-// Calculate the 16-bit checksum of the given byte array. RFC 1071.
-uint16_t checksum(uint8_t* arr, int len) {
-    uint64_t checksum = 0;
-
-    // Add up all the bytes.
-    for (int i = 0; i < len / 2; i++) {
-        checksum += arr[0] + (arr[1] << 8);
-        arr += 2;
-    }
-
-    // Add the final byte if the length is odd.
-    if (len % 2) {
-        checksum += arr[0];
-    }
-
-    // Add carry bits to the sum.
-    while (checksum >> 16) {
-        checksum = (checksum & 0xffff) + (checksum >> 16);
-    }
-
-    return (uint16_t) (~checksum);
 }
 
 int main(int argc, char* argv[]) {

@@ -18,6 +18,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "util.h"
+
 #define RECV_BUFFER_SIZE 256
 #define ITERATIONS_PER_TTL 3
 
@@ -41,13 +43,6 @@ struct Response {
 uint16_t SOURCE_PORT = 3000;
 uint16_t DEST_PORT = 32768 + 666;
 
-void debugPrintBufferBytes(uint8_t* buffer, int len) {
-    for (int i = 0; i < len; i++) {
-        printf("%u ", buffer[i]);
-    }
-    printf("\n");
-}
-
 void debugPrintIpHeader(struct iphdr iphdr) {
     printf("tos: %u\n", iphdr.tos);
     printf("tot_len: %u\n", ntohs(iphdr.tot_len));
@@ -63,18 +58,6 @@ void debugPrintIpHeader(struct iphdr iphdr) {
     printf("daddr: %u - %u.%u.%u.%u\n", iphdr.daddr, buf[0], buf[1], buf[2], buf[3]);
 }
 
-void debugPrintICMPInfo(struct icmphdr hdr) {
-    printf("Type: %d\n", hdr.type);
-    printf("Code: %d\n", hdr.code);
-    printf("Id: %d\n", ntohs(hdr.un.echo.id));
-    printf("Sequence Number: %d\n", ntohs(hdr.un.echo.sequence));
-    printf("Checksum: %u\n", hdr.checksum);
-}
-
-uint64_t totalMicroseconds(struct timeval time) {
-    return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
-}
-
 void printOutputLine(uint32_t addr, struct timeval send, struct timeval recv) {
     uint64_t latency = totalMicroseconds(recv) - totalMicroseconds(send);
     printf("%d.%d.%d.%d (%lu.%lums)   ",
@@ -85,29 +68,6 @@ void printOutputLine(uint32_t addr, struct timeval send, struct timeval recv) {
         latency / 1000,
         latency % 1000
     );
-}
-
-// Calculate the 16-bit checksum of the given byte array. RFC 1071.
-uint16_t checksum(uint8_t* arr, int len) {
-    uint64_t checksum = 0;
-
-    // Add up all the bytes.
-    for (int i = 0; i < len / 2; i++) {
-        checksum += arr[0] + (arr[1] << 8);
-        arr += 2;
-    }
-
-    // Add the final byte if the length is odd.
-    if (len % 2) {
-        checksum += arr[0];
-    }
-
-    // Add carry bits to the sum.
-    while (checksum >> 16) {
-        checksum = (checksum & 0xffff) + (checksum >> 16);
-    }
-
-    return (uint16_t) (~checksum);
 }
 
 struct SendPacket buildMessage() {
