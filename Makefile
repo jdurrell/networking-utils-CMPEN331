@@ -7,8 +7,8 @@ all: ping traceroute
 
 # Build ping.
 ping:
-	$(CC) ping.c util.c -o ping362.out
+	$(CC) ping.c util.c -o ping362
 
 # Build traceroute.
 traceroute:
-	$(CC) traceroute.c util.c -o traceroute362.out
+	$(CC) traceroute.c util.c -o traceroute362
