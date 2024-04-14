@@ -12,3 +12,6 @@ ping:
 # Build traceroute.
 traceroute:
 	$(CC) traceroute.c util.c -o traceroute362
+
+clean:
+	rm -r ping362 traceroute362

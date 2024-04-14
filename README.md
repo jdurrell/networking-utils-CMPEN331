@@ -18,3 +18,6 @@ This utility may require `sudo` privileges to run since it uses 'raw' sockets.
 
 Usage: `traceroute362 <target>`
 * `<target>` can be either an IP address or a hostname. Currently, only IPv4 addresses are supported.
+
+## Uninstallation
+To uninstall, simply delete the top-level folder of this repository from your machine.
