@@ -3,11 +3,12 @@
 #endif
 
 #include <arpa/inet.h>
-#include <bits/sockaddr.h>
 #include <errno.h>
 #include <netdb.h>
+#include <netinet/icmp6.h>
 #include <netinet/in.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/ip6.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,21 +21,39 @@
 #include "util.h"
 
 #define ADDRESS_BUFFER_SIZE 200
-#define MAGIC_DATA_IDX 0
-#define PID_DATA_IDX 1
+#define PID_DATA_IDX 0
+#define MAGIC_DATA_IDX 1
+#define PID_UN_IDX 0
+#define SEQUENCE_NUMBER_UN_IDX 1
+#define SEND_BUFFER_SIZE 256
 #define RECV_BUFFER_SIZE 256
 
-struct EchoPacket {
+struct EchoPacketV4 {
     struct icmphdr hdr;   // ICMP Header
-    int data[2];         // Data containing magic values to help ensure correctness.
+    int data[2];          // Data containing magic values to help ensure correctness.
 };
-
-struct EchoResponse {
+struct EchoResponseV4 {
     struct iphdr iphdr;
-    struct EchoPacket packet;
+    struct EchoPacketV4 packet;
 };
 
-void debugPrintPacketInfo(struct EchoPacket packet) {
+// In theory, the echo requests for ICMP and ICMPv6 are exactly the same (except for a different code).
+// It is redefined here anyways for posterity.
+struct EchoPacketV6 {
+    struct icmp6_hdr hdr;   // ICMPv6 Header
+    int data[2];        // Data containing magic values to help ensure correctness.
+};
+struct EchoResponseV6 {
+    struct ip6_hdr iphdr;
+    struct EchoPacketV6 packet;
+};
+
+uint8_t recvBuffer[RECV_BUFFER_SIZE];
+int MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
+struct timeval TIMEOUT = {3, 0};  // Timeout of 3 seconds.
+int error = 0;
+
+void debugPrintPacketInfov4(struct EchoPacketV4 packet) {
     printf("Type: %d\n", packet.hdr.type);
     printf("Code: %d\n", packet.hdr.code);
     printf("Id: %d\n", ntohs(packet.hdr.un.echo.id));
@@ -43,33 +62,16 @@ void debugPrintPacketInfo(struct EchoPacket packet) {
     printf("Data: %lu\n", *((uint64_t*)(packet.data)));
 }
 
-int main(int argc, char* argv[]) {
-    struct timeval TIMEOUT = {3, 0};
-    int MAGIC = (13 << 24) + (0 << 16) + (94 << 8) + (35);
-
-    if (argc != 2) {
-        printf("Invalid number of arguments provided. Usage: ping <address-or-hostname>\n");
-        return 1;
+uint8_t ipv6AddressAreEqual(struct in6_addr a, struct in6_addr b) {
+    for (int i = 0; i < 4; i++) {
+        if (a.__in6_u.__u6_addr32[i] != b.__in6_u.__u6_addr32[i]) {
+            return false;
+        }
     }
+    return true;
+}
 
-    int error = 0;
-
-    // Resolve hostname to IP address.
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;  // Only use IPv4 addresses for now.
-    hints.ai_protocol = IPPROTO_ICMP;
-    hints.ai_flags = 0;
-    hints.ai_socktype = SOCK_RAW;
-    struct addrinfo* addrinfo = NULL;
-    error = getaddrinfo(argv[1], NULL, &hints, &addrinfo);
-    if (error < 0) {
-        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
-        return 1;
-    } else if (addrinfo == NULL) {
-        printf("No addresses found for given hostname %s.\n", argv[1]);
-        return 1;
-    }
+int pingv4(struct addrinfo* addrinfo, int sockId) {
 
     // Set up address struct.
     struct sockaddr_in addr;
@@ -83,20 +85,8 @@ int main(int argc, char* argv[]) {
             (ntohl(addr.sin_addr.s_addr) & 0x000000FF)
     );
 
-    // Create raw socket for sending and receiving ICMP messages.
-    int sockId = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
-    if (sockId == -1) {
-        printf("Error creating socket.\n");
-        return 1;
-    }
-    error = setsockopt(sockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
-    if (error < 0) {
-        printf("Failed to set receive socket option correctly: %d\n", errno);
-        return 1;
-    }
-
-    // Build ICMP echo request message. RFC 792.
-    struct EchoPacket echoRequestMessage;
+    // Build ICMP echo request message. RFCs 792 (v4) and 4443 (v6).
+    struct EchoPacketV4 echoRequestMessage;
     echoRequestMessage.hdr.type = ICMP_ECHO;
     echoRequestMessage.hdr.code = 0;
     // Cast pid to a 16-bit integer because id field is 16-bit.
@@ -106,9 +96,8 @@ int main(int argc, char* argv[]) {
     echoRequestMessage.data[PID_DATA_IDX] = getpid();
 
     // Set up response fields.
-    uint8_t buffer[RECV_BUFFER_SIZE];
-    struct EchoResponse* reply;
-    reply = (struct EchoResponse*) buffer;
+    uint8_t recvBuffer[RECV_BUFFER_SIZE];
+    struct EchoResponseV4* reply = (struct EchoResponseV4*) recvBuffer;
     struct icmphdr* replyHdr = &(reply->packet.hdr);
     struct timeval sendTime;
     struct timeval recvTime;
@@ -116,7 +105,7 @@ int main(int argc, char* argv[]) {
     printf("Pinging %s:\n", ipAddressString);
     while (true) {
         // Reset structures for receiving data.
-        memset(buffer, 0, RECV_BUFFER_SIZE);
+        memset(recvBuffer, 0, RECV_BUFFER_SIZE);
 
         // Calculate checksum.
         echoRequestMessage.hdr.checksum = 0;
@@ -124,7 +113,9 @@ int main(int argc, char* argv[]) {
 
         // Send echo request message.
         gettimeofday(&sendTime, NULL);
-        int bytes = sendto(sockId, &(echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr));
+        int bytes = sendto(
+                sockId, (uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr)
+        );
         if (bytes < 0) {
             printf("Error sending message: %d (%s)\n", errno, strerror(errno));
             return 1;
@@ -137,27 +128,33 @@ int main(int argc, char* argv[]) {
         }
 
         // Attempt to receive echo reply message.
-        bytes = recvfrom(sockId, buffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
+        bytes = recvfrom(sockId, recvBuffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
         gettimeofday(&recvTime, NULL);
         if ((bytes < 0) && (errno != EAGAIN)) {
-            printf("Error receiving message %d: %d (%s)\n", echoRequestMessage.hdr.un.echo.sequence, errno, strerror(errno));
+            printf("Error receiving message %d: %d (%s)\n", ntohs(echoRequestMessage.hdr.un.echo.sequence), errno, strerror(errno));
             return 1;
-        } else if ((bytes > 0) && (bytes != sizeof(struct EchoResponse))) {
+        } else if ((bytes > 0) && (bytes != sizeof(struct EchoResponseV4))) {
             printf(
                     "Error: Did not receive the expected number of bytes. Expected %lu, received %d.\n",
-                    sizeof(struct EchoResponse), bytes
+                    sizeof(struct EchoResponseV4), bytes
             );
             return 1;
         } else if (errno == EAGAIN) {
             // Timed out.
             printf("* * *\n");
         } else {
-            // Ensure reply message was correct.
-            if ((reply->iphdr.saddr == addr.sin_addr.s_addr)                                // Packet is from the target.
-                && (replyHdr->code == 0) && (replyHdr->type == 0)                           // Packet is an echo response.
-                && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)  // Packet is a response to this iteration.
-                && (reply->packet.data[PID_DATA_IDX] == getpid())                           // Packet is a response to *this* process.
-                && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))                           // Magic is correct.
+            /* Ensure reply message was correct:
+             * is from the target
+             * is an echo response
+             * is a response to this iteration
+             * is a response to this process
+             * magic is correct
+             */
+            if ((reply->iphdr.saddr == addr.sin_addr.s_addr)
+                && (replyHdr->code == 0) && (replyHdr->type == 0)
+                && (replyHdr->un.echo.sequence == echoRequestMessage.hdr.un.echo.sequence)
+                && (reply->packet.data[PID_DATA_IDX] == getpid())
+                && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))
             {
                 // Reply message was valid: print output to console.
                 uint64_t latency = totalMicroseconds(recvTime) - totalMicroseconds(sendTime);
@@ -174,6 +171,194 @@ int main(int argc, char* argv[]) {
 
         // Sleep for a second so that we don't spam both the console and the target server.
         sleep(1);
+    }
+
+    return 0;
+}
+
+int pingv6(struct addrinfo* addrinfo, int sockId) {
+    // Set up address struct.
+
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_addr = ((struct sockaddr_in6*)(addrinfo->ai_addr))->sin6_addr;
+    addr.sin6_family = AF_INET6;
+
+    // Build ICMP echo request message. RFCs 792 (v4) and 4443 (v6).
+    struct EchoPacketV6 echoRequestMessage;
+    echoRequestMessage.hdr.icmp6_type = ICMP6_ECHO_REQUEST;
+    echoRequestMessage.hdr.icmp6_code = 0;
+    // Cast pid to a 16-bit integer because id field is 16-bit.
+    echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[PID_UN_IDX] = htons((uint16_t)(getpid() % (1 << 16)));
+    echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX] = htons(1);
+    echoRequestMessage.data[PID_DATA_IDX] = getpid();
+    echoRequestMessage.data[MAGIC_DATA_IDX] = MAGIC;
+
+    // Set up response fields.
+    uint8_t recvBuffer[RECV_BUFFER_SIZE];
+    struct EchoResponseV6* reply = (struct EchoResponseV6*) recvBuffer;
+    struct icmp6_hdr* replyHdr = &(reply->packet.hdr);
+    struct timeval sendTime;
+    struct timeval recvTime;
+
+    char ipAddressString[ADDRESS_BUFFER_SIZE];
+    inet_ntop(AF_INET6, &(addr.sin6_addr), ipAddressString, ADDRESS_BUFFER_SIZE);
+    printf("Pinging %s:\n", ipAddressString);
+
+    while (true) {
+        // Reset structures for receiving data.
+        memset(recvBuffer, 0, RECV_BUFFER_SIZE);
+
+        // Calculate checksum.
+        echoRequestMessage.hdr.icmp6_cksum = 0;
+        echoRequestMessage.hdr.icmp6_cksum = checksum((uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage));
+
+        // Send echo request message.
+        gettimeofday(&sendTime, NULL);
+        int bytes = sendto(
+                sockId, (uint8_t*)(&echoRequestMessage), sizeof(echoRequestMessage), 0, (struct sockaddr*)(&addr), sizeof(addr)
+        );
+        if (bytes < 0) {
+            printf("Error sending message: %d (%s)\n", errno, strerror(errno));
+            return 1;
+        } else if (bytes != sizeof(echoRequestMessage)) {
+            printf(
+                    "Error: Did not send the expected number of bytes. Expected %lu, sent %d.\n",
+                    sizeof(echoRequestMessage), bytes
+            );
+            return 1;
+        }
+
+        // Attempt to receive echo reply message.
+        bytes = recvfrom(sockId, recvBuffer, RECV_BUFFER_SIZE, 0, NULL, NULL);
+        gettimeofday(&recvTime, NULL);
+        debugPrintBufferBytes(recvBuffer, sizeof(struct EchoResponseV6));
+        if ((bytes < 0) && (errno != EAGAIN)) {
+            printf("Error receiving message %d: %d (%s)\n",
+                    ntohs(echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX]), errno, strerror(errno)
+            );
+            return 1;
+        } else if ((bytes > 0) && (bytes != sizeof(struct EchoResponseV6))) {
+            printf(
+                    "Error: Did not receive the expected number of bytes. Expected %lu, received %d.\n",
+                    sizeof(struct EchoResponseV6), bytes
+            );
+            // return 1;
+        } else if (errno == EAGAIN) {
+            // Timed out.
+            printf("* * *\n");
+        } else {
+            /* Ensure reply message was correct:
+             * is from the target
+             * is an echo response
+             * is a response to this iteration
+             * is a response to this process
+             * magic is correct
+             */
+            if (ipv6AddressAreEqual(reply->iphdr.ip6_src, addr.sin6_addr)
+                && (replyHdr->icmp6_code == 0) && (replyHdr->icmp6_type == ICMP6_ECHO_REPLY)
+                && (replyHdr->icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX] ==
+                    echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX])
+                && (reply->packet.data[PID_DATA_IDX] == getpid())
+                && (reply->packet.data[MAGIC_DATA_IDX] == MAGIC))
+            {
+                // Reply message was valid: print output to console.
+                uint64_t latency = totalMicroseconds(recvTime) - totalMicroseconds(sendTime);
+                printf("Reply %d from %s received in %ld.%ldms\n", 
+                        ntohs(replyHdr->icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX]),
+                        ipAddressString, latency/1000, latency%1000
+                );
+            } else {
+                printf("* * *\n");
+            }
+        }
+
+        // Increment sequence number.
+        echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX] = ntohs(
+                htons(echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX]) + 1
+        );
+
+        // Sleep for a second so that we don't spam both the console and the target server.
+        sleep(1);
+    }
+
+    return 0;
+}
+
+int main(int argc, char* argv[]) {
+    if ((argc < 2) || (argc > 3)) {
+        printf("Invalid arguments provided. Usage: ping <target> -[46]\n");
+        return 1;
+    }
+
+    // Parse command line options.
+    char* target = argv[1];
+    int version = 0;  // Default to interpreting from the input.
+    int opt;
+    while ((opt = getopt(argc, argv, "46")) != -1) {
+        switch (opt) {
+        case '4':
+            version = 4;
+            break;
+        case '6':
+            version = 6;
+            break;
+        default:
+            printf("Usage: %s [target] [-(4|6) version]\n", argv[0]);
+            return 1;
+        }
+    }
+
+    // Resolve hostname to IP address.
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    if (version == 0) {
+        hints.ai_family = 0;
+        hints.ai_protocol = IPPROTO_ICMP;
+    } else if (version == 4) {
+        hints.ai_family = AF_INET;
+        hints.ai_protocol = IPPROTO_ICMP;
+    } else {
+        hints.ai_family = AF_INET6;
+        hints.ai_protocol = IPPROTO_ICMPV6;
+    }
+    hints.ai_flags = 0;
+    hints.ai_socktype = SOCK_RAW;
+    struct addrinfo* addrinfo = NULL;
+    error = getaddrinfo(target, NULL, &hints, &addrinfo);
+    if (error < 0) {
+        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
+        return 1;
+    } else if (addrinfo == NULL) {
+        printf("No addresses found for given hostname %s.\n", argv[1]);
+        return 1;
+    }
+    if (version == 0) {
+        // Interpret version from discovered address if necessary.
+        version = (addrinfo->ai_family == AF_INET) ? 4 : 6;
+    }
+
+    // Create raw socket for sending and receiving ICMP messages.
+    int sockId;
+    if (version == 4) {
+        sockId = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP); 
+    } else {
+        sockId = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
+    }
+    if (sockId == -1) {
+        printf("Error creating socket.\n");
+        return 1;
+    }
+    error = setsockopt(sockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
+    if (error < 0) {
+        printf("Failed to set receive socket option correctly: %d\n", errno);
+        return 1;
+    }
+
+    if (version == 4) {
+        return pingv4(addrinfo, sockId);
+    } else {
+        return pingv6(addrinfo, sockId);
     }
 
     return 0;
