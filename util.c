@@ -83,6 +83,11 @@ struct addrinfo* resolveHostnameOrIP(char* host, int version) {
     return addrinfo;
 }
 
+// Returns the total number of microseconds indicated by 'time'.
+uint64_t totalMicroseconds(struct timeval time) {
+    return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
+}
+
 // Print the byte values of the given buffer one-by-one, up to len.
 void debugPrintBufferBytes(uint8_t* buffer, int len) {
     for (int i = 0; i < len; i++) {
@@ -91,17 +96,12 @@ void debugPrintBufferBytes(uint8_t* buffer, int len) {
     printf("\n");
 }
 
-// Returns the total number of microseconds indicated by 'time'.
-uint64_t totalMicroseconds(struct timeval time) {
-    return (((uint64_t)(time.tv_sec)) * 1000000) + (uint64_t)(time.tv_usec);
-}
-
 // Print the values of the given ICMP header.
 void debugPrintICMPHeader(struct icmphdr hdr) {
     printf("Type: %d\n", hdr.type);
     printf("Code: %d\n", hdr.code);
-    printf("Id: %d\n", ntohs(hdr.un.echo.id));
-    printf("Sequence Number: %d\n", ntohs(hdr.un.echo.sequence));
+    printf("Id: %d\n", hdr.un.echo.id);
+    printf("Sequence Number: %d\n", hdr.un.echo.sequence);
     printf("Checksum: %u\n", hdr.checksum);
 }
 
