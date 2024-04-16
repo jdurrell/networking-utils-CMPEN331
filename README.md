@@ -1,6 +1,6 @@
 This repository contains source code for custom implementations of some basic networking utilities. These have been tested on Ubuntu 20.04.
 
-Upon completion and submisison, this will fulfill the honors option requirement for CMPEN 331 (Computer Networks).
+Upon completion and submisison, this will fulfill the honors option requirement for CMPEN 362 (Computer Networks).
 
 ## Instructions for use
 First, clone this repository to your machine.
