@@ -1,5 +1,6 @@
+// Fix VSCode intellisense.
 #ifndef _DEFAULT_SOURCE
-#define _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
 #endif
 
 #include <arpa/inet.h>
@@ -43,28 +44,10 @@ struct Response {
 uint16_t SOURCE_PORT = 3000;
 uint16_t DEST_PORT = 32768 + 666;
 
-void debugPrintIpHeader(struct iphdr iphdr) {
-    printf("tos: %u\n", iphdr.tos);
-    printf("tot_len: %u\n", ntohs(iphdr.tot_len));
-    printf("id: %u\n", ntohs(iphdr.id));
-    printf("frag_off: %u\n", iphdr.frag_off);
-    printf("ttl: %u\n", iphdr.ttl);
-    printf("protocol: %u\n", iphdr.protocol);
-    printf("checksum: %u\n", iphdr.check);
-    uint8_t buf[4];
-    memcpy(buf, &(iphdr.saddr), 4);
-    printf("saddr: %u - %u.%u.%u.%u\n", iphdr.saddr, buf[0], buf[1], buf[2], buf[3]);
-    memcpy(buf, &(iphdr.daddr), 4);
-    printf("daddr: %u - %u.%u.%u.%u\n", iphdr.daddr, buf[0], buf[1], buf[2], buf[3]);
-}
-
-void printOutputLine(uint32_t addr, struct timeval send, struct timeval recv) {
+void printTracerouteOutputLine(uint32_t addr, struct timeval send, struct timeval recv) {
     uint64_t latency = totalMicroseconds(recv) - totalMicroseconds(send);
-    printf("%d.%d.%d.%d (%lu.%lums)   ",
-        (ntohl(addr) & 0xFF000000) >> 24,
-        (ntohl(addr) & 0x00FF0000) >> 16,
-        (ntohl(addr) & 0x0000FF00) >> 8,
-        (ntohl(addr) & 0x000000FF),
+    printf("%s (%lu.%lums)   ",
+        inet_ntoa(*((struct in_addr*)(&addr))),  // Dirty cast from 32-bit address to proper 32-bit struct.
         latency / 1000,
         latency % 1000
     );
@@ -95,20 +78,9 @@ int main(int argc, char* argv[]) {
     struct timeval TIMEOUT = {1, 0};
     int error = 0;
 
-    // Resolve hostname to IP address.
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_INET;  // Only use IPv4 addresses for now.
-    hints.ai_protocol = IPPROTO_ICMP;
-    hints.ai_flags = 0;
-    hints.ai_socktype = SOCK_RAW;
-    struct addrinfo* addrinfo = NULL;
-    error = getaddrinfo(argv[1], NULL, &hints, &addrinfo);
-    if (error < 0) {
-        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
-        return 1;
-    } else if (addrinfo == NULL) {
-        printf("No addresses found for given hostname %s.\n", argv[1]);
+    struct addrinfo* addrinfo = resolveHostnameOrIP(argv[1], 4);  // Only supporting IPv4 addresses for now.
+    if (addrinfo == NULL) {
+        printf("Host resolution failed.\n");
         return 1;
     }
 
@@ -189,7 +161,7 @@ int main(int argc, char* argv[]) {
                 if (raddr == destAddr.sin_addr.s_addr) {
                     numFinalResponses++;
                 }
-                printOutputLine(raddr, sendTime, recvTime);
+                printTracerouteOutputLine(raddr, sendTime, recvTime);
             }
 
             // Sleep for half a second in between packets.

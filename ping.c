@@ -1,5 +1,6 @@
+// Fix VSCode intellisense.
 #ifndef _DEFAULT_SOURCE
-#define _DEFAULT_SOURCE
+#define _DEFAULT_SOURCE 1
 #endif
 
 #include <arpa/inet.h>
@@ -53,21 +54,8 @@ struct timeval TIMEOUT = {3, 0};  // Timeout of 3 seconds.
 int error = 0;
 
 void debugPrintPacketInfov4(struct EchoPacketV4 packet) {
-    printf("Type: %d\n", packet.hdr.type);
-    printf("Code: %d\n", packet.hdr.code);
-    printf("Id: %d\n", ntohs(packet.hdr.un.echo.id));
-    printf("Sequence Number: %d\n", ntohs(packet.hdr.un.echo.sequence));
-    printf("Checksum: %u\n", packet.hdr.checksum);
-    printf("Data: %lu\n", *((uint64_t*)(packet.data)));
-}
-
-uint8_t ipv6AddressAreEqual(struct in6_addr a, struct in6_addr b) {
-    for (int i = 0; i < 4; i++) {
-        if (a.__in6_u.__u6_addr32[i] != b.__in6_u.__u6_addr32[i]) {
-            return false;
-        }
-    }
-    return true;
+    debugPrintICMPHeader(packet.hdr);
+    printf("Data: %d %d\n", packet.data[0], packet.data[1]);
 }
 
 int pingv4(struct addrinfo* addrinfo, int sockId) {
@@ -252,7 +240,7 @@ int pingv6(struct addrinfo* addrinfo, int sockId) {
                 * is a response to this process
                 * magic is correct
                 */
-                if (ipv6AddressAreEqual(returnAddr.sin6_addr, addr.sin6_addr) &&
+                if (ipv6AddressesAreEqual(returnAddr.sin6_addr, addr.sin6_addr) &&
                     (replyHdr->icmp6_code == 0) && (replyHdr->icmp6_type == ICMP6_ECHO_REPLY)
                     && (replyHdr->icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX] ==
                         echoRequestMessage.hdr.icmp6_dataun.icmp6_un_data16[SEQUENCE_NUMBER_UN_IDX])
@@ -307,28 +295,12 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Resolve hostname to IP address.
-    struct addrinfo hints;
-    memset(&hints, 0, sizeof(hints));
-    if (version == 0) {
-        hints.ai_family = 0;
-        hints.ai_protocol = IPPROTO_ICMP;
-    } else if (version == 4) {
-        hints.ai_family = AF_INET;
-        hints.ai_protocol = IPPROTO_ICMP;
-    } else {
-        hints.ai_family = AF_INET6;
-        hints.ai_protocol = IPPROTO_ICMPV6;
-    }
-    hints.ai_flags = 0;
-    hints.ai_socktype = SOCK_RAW;
-    struct addrinfo* addrinfo = NULL;
-    error = getaddrinfo(target, NULL, &hints, &addrinfo);
-    if (error < 0) {
-        printf("Error resolving hostname %s: %d (%s)\n", argv[1], error, strerror(error));
-        return 1;
-    } else if (addrinfo == NULL) {
-        printf("No addresses found for given hostname %s.\n", argv[1]);
+    struct addrinfo* addrinfo = resolveHostnameOrIP(target, version);
+    if (addrinfo == NULL) {
+        printf("Host resolution failed.\n");
+        if (version == 4 && strchr(argv[1], ':') != NULL) {
+            printf("Did you mean to include the -6 flag?\n");
+        }
         return 1;
     }
 
