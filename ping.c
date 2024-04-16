@@ -234,7 +234,7 @@ int main(int argc, char* argv[]) {
         sockId = socket(AF_INET6, SOCK_RAW, IPPROTO_ICMPV6);
     }
     if (sockId == -1) {
-        printf("Error creating socket.\n");
+        printf("Error creating socket: %s\n", strerror(errno));
         return 1;
     }
     error = setsockopt(sockId, SOL_SOCKET, SO_RCVTIMEO, &TIMEOUT, sizeof(TIMEOUT));
